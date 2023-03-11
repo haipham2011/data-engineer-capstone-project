@@ -5,7 +5,7 @@ from module.config import get_config
 from module.sparkUtils import *
 
 
-def write_to_s3(config: ConfigParser, data_path: str) -> None:
+def write_to_s3(config: ConfigParser, output_path: str) -> None:
     """Write the output data from output dir to S3."""
 
     aws_key = config["AWS"]["KEY"]
@@ -18,12 +18,12 @@ def write_to_s3(config: ConfigParser, data_path: str) -> None:
     s3_session = session.resource("s3")
     bucket = s3_session.Bucket(s3_bucket)
 
-    for subdir, _, files in os.walk(data_path):
+    for subdir, _, files in os.walk(output_path):
         for file in files:
             full_path = os.path.join(subdir, file)
             with open(full_path, "rb") as data:
                 bucket.put_object(
-                    Key=full_path[len(data_path) + 1:], Body=data)
+                    Key=full_path[len(output_path) + 1:], Body=data)
 
 
 def main():
@@ -53,8 +53,7 @@ def main():
     write_data_to_dir(df_passenger, output_dir, "passenger")
     write_data_to_dir(df_surcharge, output_dir, "surcharge")
 
-    write_to_s3(config, data_path=output_dir)
-
+    write_to_s3(config, output_dir)
 
 if __name__ == "__main__":
     main()
