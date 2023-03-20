@@ -37,21 +37,18 @@ def main():
     df_trip = create_taxi_trip_df(
         spark, f"{input_dir}/yellow_tripdata_2019-01.parquet")
     df_zone = create_taxi_zone_df(spark, f"{input_dir}/taxi_zones_lookup.csv")
+    df_date = create_date_df(df_trip)
 
-    df_taxi_location_pick_up = create_pickup_location_df(df_trip, df_zone)
-    df_taxi_location_drop_off = create_dropoff_location_df(df_trip, df_zone)
+    df_pickup_location_gain = create_location_gain_table(df_trip, df_zone, "pick_up_location_id")
+    df_dropoff_location_gain = create_location_gain_table(df_trip, df_zone, "drop_off_location_id")
+    df_daily_passenger_distance = create_daily_passenger_distance_df(df_trip, df_date)
 
-    df_fare = create_fare_df(df_trip)
-    df_passenger = create_fare_df(df_trip)
-    df_surcharge = create_surcharge_df(df_trip)
 
-    write_data_to_dir(df_taxi_location_pick_up,
-                      output_dir, "taxi_location_pickup")
-    write_data_to_dir(df_taxi_location_drop_off,
-                      output_dir, "taxi_location_drop_off")
-    write_data_to_dir(df_fare, output_dir, "fare")
-    write_data_to_dir(df_passenger, output_dir, "passenger")
-    write_data_to_dir(df_surcharge, output_dir, "surcharge")
+    write_data_to_dir(df_pickup_location_gain,
+                      output_dir, "pickup_location_gain")
+    write_data_to_dir(df_dropoff_location_gain,
+                      output_dir, "dropoff_location_gain")
+    write_data_to_dir(df_daily_passenger_distance, output_dir, "daily_passenger_distance")
 
     write_to_s3(config, output_dir)
 

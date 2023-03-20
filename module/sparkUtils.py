@@ -2,8 +2,9 @@ from typing import List
 from pyspark.sql.dataframe import DataFrame
 from pyspark.sql import SparkSession
 import pyspark.sql.functions as f
-from pyspark.sql.functions import col
+import pyspark.sql.types as t
 import os
+
 
 def validate_data_quality(df: DataFrame, col_ids: List[str], table_name: str) -> None:
     """Check if the table contains data and the id column is not null."""
@@ -30,9 +31,27 @@ def create_taxi_trip_df(spark: SparkSession, trip_data_path) -> DataFrame:
     # Read taxi parquet files
     df_trip = spark.read.parquet(trip_data_path)
     df_trip.createOrReplaceTempView("taxiTable")
-    df_trip = df_trip.withColumn("uuid", f.expr("uuid()"))
 
-    validate_data_quality(df_trip, ["VendorID", "RatecodeID"], "Trip table")
+    df_trip = df_trip.withColumn("uuid", f.expr("uuid()")).withColumnRenamed("VendorId", "vendor_id") \
+                        .withColumnRenamed("Passenger_count", "passenger_count") \
+                        .withColumnRenamed("Trip_distance", "trip_distance") \
+                        .withColumnRenamed("PULocationID","pick_up_location_id") \
+                        .withColumnRenamed("DOLocationID","drop_off_location_id") \
+                        .withColumnRenamed("RateCodeID","rate_code_id") \
+                        .withColumnRenamed("Store_and_fwd_flag","store_and_fwd_flag") \
+                        .withColumnRenamed("Payment_type","payment_type") \
+                        .withColumnRenamed("Fare_amount","fare_amount") \
+                        .withColumnRenamed("Extra","extra") \
+                        .withColumnRenamed("MTA_tax","mta_tax") \
+                        .withColumnRenamed("Improvement_surcharge","improvement_surcharge") \
+                        .withColumnRenamed("Tip_amount","tip_amount") \
+                        .withColumnRenamed("Tolls_amount","tolls_amount") \
+                        .withColumnRenamed("Total_amount","total_amount") \
+                        .withColumnRenamed("Congestion_Surcharge","congestion_surcharge") \
+                        .withColumnRenamed("Airport_fee","airport_fee") \
+                        .withColumn("passenger_count", f.col("passenger_count").cast(t.LongType()))
+
+    validate_data_quality(df_trip, ["vendor_id", "rate_code_id"], "Trip table")
     return df_trip
 
 
@@ -41,61 +60,59 @@ def create_taxi_zone_df(spark: SparkSession, zone_data_path) -> DataFrame:
     # Read zone lookup csv file
     df_zone = spark.read.option("header", True).csv(zone_data_path)
     df_zone.createOrReplaceTempView("zoneTable")
-
+    df_zone = df_zone.withColumnRenamed("LocationID", "location_id") \
+                    .withColumnRenamed("Borough", "borough") \
+                    .withColumnRenamed("Zone", "zone").dropna()
+    
     validate_data_quality(df_zone, ["LocationID", "Zone"], "Zone table")
     return df_zone
 
 
-def create_pickup_location_df(df_trip: DataFrame, df_zone: DataFrame) -> DataFrame:
-    """Create a pickup location data frame"""
-    df_taxi_location = df_trip.withColumnRenamed("PULocationID", "pick_up_location_id") \
-        .select(col("uuid"), col("pick_up_location_id"))
+def create_date_df(df_trip: DataFrame) -> DataFrame:
+    df_date = df_trip.select(f.col("tpep_pickup_datetime")) \
+                .withColumnRenamed("tpep_pickup_datetime", "timestamp") \
+                .withColumn("year", f.year(f.col("timestamp"))) \
+                .withColumn("month", f.month(f.col("timestamp"))) \
+                .withColumn("day", f.dayofmonth(f.col("timestamp"))) \
+                .withColumn("hour", f.hour(f.col("timestamp"))) \
+                .withColumn("minute", f.minute(f.col("timestamp"))) \
+                .withColumn("second", f.second(f.col("timestamp"))) \
+                .withColumn("day_of_week", f.dayofweek(f.col("timestamp")))
+    
+    return df_date
 
-    df_taxi_location_pick_up = df_taxi_location.join(df_zone,
-                                                     (df_taxi_location["pick_up_location_id"] == df_zone["LocationID"])) \
-        .select(df_taxi_location["uuid"], df_taxi_location["pick_up_location_id"],
-                df_zone["Borough"], df_zone["Zone"]) \
-        .withColumnRenamed("Borough", "pick_up_borough") \
-        .withColumnRenamed("Zone", "pick_up_zone")
+def create_location_gain_table(df_trip: DataFrame, df_zone: DataFrame, type_location: str) -> DataFrame:
+    """Create location gain table"""
+    df_location_gain = df_trip.select(f.col(type_location),
+                                      f.col("fare_amount"), f.col(
+                                          "extra"), f.col("mta_tax"),
+                                      f.col("tip_amount"), f.col("tolls_amount"), f.col("total_amount")) \
+        .groupBy(type_location).agg(f.sum("fare_amount").alias("total_fare_amount"),
+                                    f.sum("extra").alias(
+            "total_extra"),
+        f.sum("mta_tax").alias(
+            "total_mta_tax"),
+        f.sum("tip_amount").alias(
+            "total_tip_amount"),
+        f.sum("tolls_amount").alias("total_tolls_amount"))
 
-    return df_taxi_location_pick_up
+    df_zone_simplified = df_zone.select(f.col("zone"), f.col("location_id"))
+    df_location_gain = df_location_gain.join(df_zone_simplified) \
+        .where(df_zone_simplified["location_id"] == df_location_gain[type_location]) \
+        .drop(type_location)
 
-
-def create_dropoff_location_df(df_trip: DataFrame, df_zone: DataFrame) -> DataFrame:
-    """Create a dropoff location data frame"""
-    df_taxi_location = df_trip.withColumnRenamed("DOLocationID", "drop_off_location_id") \
-        .select(col("uuid"), col("drop_off_location_id"))
-
-    df_taxi_location_drop_off = df_taxi_location.join(df_zone, (df_taxi_location["drop_off_location_id"] == df_zone["LocationID"])) \
-        .select(df_taxi_location["uuid"], df_taxi_location["drop_off_location_id"], df_zone["Borough"], df_zone["Zone"]) \
-        .withColumnRenamed("Borough", "drop_off_borough") \
-        .withColumnRenamed("Zone", "drop_off_zone")
-
-    return df_taxi_location_drop_off
-
-
-def create_fare_df(df_trip: DataFrame) -> DataFrame:
-    """Create a fare information data frame"""
-    df_taxi_fare = df_trip.select(col("uuid"), col("VendorID"), col("payment_type"), col(
-        "fare_amount"), col("extra"), col("mta_tax"), col("tip_amount"), col("total_amount"))
-
-    return df_taxi_fare
-
-
-def create_passenger_df(df_trip: DataFrame) -> DataFrame:
-    """Create a passenger with trip distance information data frame"""
-    df_taxi_passenger = df_trip.select(col("uuid"), col(
-        "VendorID"), col("passenger_count"), col("trip_distance"))
-
-    return df_taxi_passenger
+    return df_location_gain
 
 
-def create_surcharge_df(df_trip: DataFrame) -> DataFrame:
-    """Create a surcharge information data frame"""
-    df_surcharge = df_trip.select(col("uuid"), col("VendorID"),
-                                  col("improvement_surcharge"), col("congestion_surcharge"))
+def create_daily_passenger_distance_df(df_trip: DataFrame, df_date: DataFrame) -> DataFrame:
+    """Create a daily passenger distance data frame"""
+    df_trip_date = df_trip.join(df_date).where(df_trip["tpep_pickup_datetime"] == df_date["timestamp"]) \
+                    .select(f.col("day_of_week"), f.col("passenger_count"), f.col("trip_distance")).dropna()
+                            
+    df_daily_passenger = df_trip_date.groupBy("day_of_week").agg(f.sum("passenger_count").alias("total_passenger_count"),
+                                                             f.sum("trip_distance").alias("total_trip_distance"))
 
-    return df_surcharge
+    return df_daily_passenger
 
 
 def write_data_to_dir(df_table: DataFrame, output_dir_path: str, table_name: str) -> None:
